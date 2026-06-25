@@ -1,0 +1,10 @@
+{
+  "additionalFiles": "..\\..,..\\..,..\\..,..\\..,..\\..,..\\..,..\\..,..\\..",
+  "builtInLibrariesFolders": "C:\\Users\\Administrator\\AppData\\Local\\Arduino15\\libraries",
+  "compiler.optimization_flags": "-Os",
+  "customBuildProperties": "",
+  "fqbn": "esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=all,JTAGAdapter=default,ZigbeeMode=default",
+  "hardwareFolders": "C:\\Users\\Administrator\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.5,C:\\Users\\Administrator\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.5",
+  "otherLibrariesFolders": "c:\\Users\\Administrator\\Documents\\Arduino\\libraries",
+  "sketchLocation": "C:\\Users\\Administrator\\Desktop\\Claude Play ground\\SD_UART_Logger+uart bridge\\SD_UART_Logger"
+}
