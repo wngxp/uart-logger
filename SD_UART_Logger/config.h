@@ -79,6 +79,9 @@
 #define WEB_FLASH_HIGHER_BAUD 460800UL     // speed-up after sync (0 = stay 115200)
 #define DEBUG_FLASH           0            // 1 = verbose SLIP trace + hex dumps in flasher
 
+// ----------------------------------------------- Web serial monitor --------
+#define MON_BUF_SIZE   4096             // ring-buffer for /monitor page (always filled)
+
 // ----------------------------------------------- Real-time graph -----------
 #define LOG_PARSE_ENABLE  1              // 1 = parse UART lines for live /graph page
 #define LOG_PARSE_FMT     "%f,%f,%f"     // sscanf pattern: angle, ang-velocity, torque

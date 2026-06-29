@@ -45,6 +45,9 @@ DataSample       g_dataBuf[LOG_GRAPH_BUF];
 volatile int     g_dataTail = 0, g_dataCount = 0;
 #endif
 
+uint8_t           g_monBuf[MON_BUF_SIZE];
+volatile uint32_t g_monWrite = 0;
+
 // =============================== SETUP ===================================
 void setup() {
  

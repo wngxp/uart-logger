@@ -43,6 +43,16 @@ extern DataSample        g_dataBuf[LOG_GRAPH_BUF];
 extern volatile int      g_dataTail, g_dataCount;
 #endif
 
+// web serial monitor ring buffer — written by uartTask, read by web handlers
+extern uint8_t           g_monBuf[MON_BUF_SIZE];
+extern volatile uint32_t g_monWrite;  // monotonic byte counter (wraps at 2^32)
+
+inline void feedMonitor(const uint8_t *d, int len) {
+  uint32_t w = g_monWrite;
+  for (int i = 0; i < len; i++) g_monBuf[(w + i) % MON_BUF_SIZE] = d[i];
+  g_monWrite = w + (uint32_t)len;
+}
+
 // Suppress debug prints while an RFC2217 client is attached is NOT needed
 // (RFC2217 runs over WiFi, not the USB console) — so debug is always allowed.
 #define DBG(...) do { Serial.printf(__VA_ARGS__); } while (0)

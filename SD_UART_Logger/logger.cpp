@@ -96,25 +96,31 @@ static void loggerStep() {
     }
   }
 
-  if (!recording) { vTaskDelay(pdMS_TO_TICKS(5)); return; }
-
+  // Always drain Serial1 — web monitor works even when not recording
   int avail = Serial1.available();
   if (avail > 0) {
-    size_t space = LOG_BUF_SIZE - logIdx;
-    size_t want  = ((size_t)avail < space) ? (size_t)avail : space;
-    int got = Serial1.readBytes(logBuf + logIdx, want);
-    if (got > 0) {
+    if (recording) {
+      size_t space = LOG_BUF_SIZE - logIdx;
+      size_t want  = ((size_t)avail < space) ? (size_t)avail : space;
+      int got = Serial1.readBytes(logBuf + logIdx, want);
+      if (got > 0) {
+        feedMonitor(logBuf + logIdx, got);
 #if LOG_PARSE_ENABLE
-      parseForGraph(logBuf + logIdx, got);
+        parseForGraph(logBuf + logIdx, got);
 #endif
-      logIdx += got;
-    }
-
-    if (logIdx >= LOG_FLUSH_AT) {
-      xSemaphoreTake(sdMutex, portMAX_DELAY);
-      logFile.write(logBuf, logIdx);
-      xSemaphoreGive(sdMutex);
-      logIdx = 0;
+        logIdx += got;
+      }
+      if (logIdx >= LOG_FLUSH_AT) {
+        xSemaphoreTake(sdMutex, portMAX_DELAY);
+        logFile.write(logBuf, logIdx);
+        xSemaphoreGive(sdMutex);
+        logIdx = 0;
+      }
+    } else {
+      // Not recording — use logBuf as scratch and feed monitor only
+      size_t want = ((size_t)avail < (size_t)LOG_BUF_SIZE) ? (size_t)avail : (size_t)LOG_BUF_SIZE;
+      int got = Serial1.readBytes(logBuf, want);
+      if (got > 0) feedMonitor(logBuf, got);
     }
   } else {
     vTaskDelay(1);
@@ -157,7 +163,7 @@ void pollButton() {
   if (millis() - lastChange > 40) {            // debounce
     if (r != stable) {
       stable = r;
-      if (r == LOW && mode == MODE_LOGGER) {   // falling edge
+      if (r == LOW && mode != MODE_FLASHING) {   // falling edge — allowed in logger + RFC2217 modes
         if (!recording && !startReq) startReq = true;
         else if (recording && !stopReq) stopReq = true;
       }

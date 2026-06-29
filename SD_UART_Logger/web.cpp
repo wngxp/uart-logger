@@ -65,40 +65,58 @@ static void handleRoot() {
   String rfc     = "rfc2217://" + ip + ":" + String(RFC2217_PORT);
   String rfcMdns = String("rfc2217://") + MDNS_NAME + ".local:" + String(RFC2217_PORT);
   page += "<div class='rfc'>"
-          "<b>Wireless Flash &amp; Monitor &mdash; RFC2217 port " + String(RFC2217_PORT) + "</b>"
+          "<b>RFC2217 wireless port &mdash; port " + String(RFC2217_PORT) + "</b>"
           "<p class='dim' style='margin:.3rem 0 .4rem'>"
-          "Point idf.py or esptool at the logger. "
-          "Auto-reset (EN&nbsp;+&nbsp;IO0) and baud negotiation are handled automatically &mdash; "
-          "works exactly like a USB cable.</p>";
+          "For flashing from your PC terminal. "
+          "To just view serial output, use the <a href='/monitor' style='color:#93c5fd'>web monitor</a> instead &mdash; "
+          "no terminal needed, and SD logging works in parallel.</p>";
 
-  page += "<div class='step'>1 &mdash; Terminal: flash &amp; open serial monitor</div>"
+  page += "<div class='step'>1 &mdash; Monitor only (no flash)</div>"
           "<div class='cmdrow'>"
-          "<code id='c1'>idf.py -p " + rfc + " flash monitor</code>"
+          "<code id='c1'>idf.py -p " + rfc + " monitor</code>"
           "<button class='btn cpbtn' onclick='cp(\"c1\")'>Copy</button></div>";
 
-  page += "<div class='step'>2 &mdash; Terminal: flash only (esptool)</div>"
+  page += "<div class='step'>2 &mdash; Flash from PC build dir, then monitor</div>"
           "<div class='cmdrow'>"
-          "<code id='c2'>esptool.py --port " + rfc + " write_flash 0x10000 app.bin</code>"
+          "<code id='c2'>idf.py -p " + rfc + " flash monitor</code>"
           "<button class='btn cpbtn' onclick='cp(\"c2\")'>Copy</button></div>";
 
-  page += "<div class='step'>3 &mdash; VS Code ESP-IDF: add to <code>.vscode/settings.json</code></div>"
+  page += "<div class='step'>3 &mdash; Flash a specific .bin (esptool)</div>"
           "<div class='cmdrow'>"
-          "<code id='c3'>&quot;idf.port&quot;: &quot;" + rfc + "&quot;</code>"
+          "<code id='c3'>esptool.py --port " + rfc + " write_flash 0x10000 yourfile.bin</code>"
           "<button class='btn cpbtn' onclick='cp(\"c3\")'>Copy</button></div>";
+
+  page += "<div class='step'>4 &mdash; VS Code ESP-IDF: set port in <code>.vscode/settings.json</code></div>"
+          "<div class='cmdrow'>"
+          "<code id='c4'>&quot;idf.port&quot;: &quot;" + rfc + "&quot;</code>"
+          "<button class='btn cpbtn' onclick='cp(\"c4\")'>Copy</button></div>";
 
   page += "<p class='dim' style='margin:.6rem 0 0'>"
           "mDNS alternative: <code>" + rfcMdns + "</code>"
           " &mdash; macOS/Linux native; Windows needs Bonjour.<br>"
-          "SD logging pauses while a client is connected and resumes automatically on disconnect.</p>"
+          "SD logging via BOOT button works during an RFC2217 session.</p>"
           "</div>"
-          "<script>function cp(id){"
-          "navigator.clipboard.writeText(document.getElementById(id).innerText)"
-          ".then(function(){var b=event.target;b.textContent='Copied!';setTimeout(function(){b.textContent='Copy'},1500)})"
-          "}</script>";
+          "<script>"
+          "function cp(id){"
+            "var b=event.target,txt=document.getElementById(id).innerText;"
+            "var done=function(){b.textContent='Copied!';setTimeout(function(){b.textContent='Copy';},1500);};"
+            "if(navigator.clipboard){"
+              "navigator.clipboard.writeText(txt).then(done).catch(function(){fbCopy(txt,b,done);});"
+            "}else{fbCopy(txt,b,done);}"
+          "}"
+          "function fbCopy(txt,b,done){"
+            "var t=document.createElement('textarea');"
+            "t.value=txt;t.style.cssText='position:fixed;opacity:0;top:0;left:0';"
+            "document.body.appendChild(t);t.focus();t.select();"
+            "try{document.execCommand('copy');done();}catch(e){b.textContent='Failed';}"
+            "document.body.removeChild(t);"
+          "}"
+          "</script>";
 
   page += "<div class='bar'>"
           "<a class='btn' href='/flash'>Upload &amp; flash .bin</a> "
           "<a class='btn alt' href='/graph'>Live Graph</a> "
+          "<a class='btn' style='background:#7c3aed' href='/monitor'>&#9654; Monitor</a> "
           "<a class='btn del' href='/format' onclick=\"return confirm('Format the SD card? This erases all logs.')\">Format SD</a>"
           "</div>"
           // status bar auto-refresh every 2 s
@@ -112,8 +130,10 @@ static void handleRoot() {
           "</script>";
 
   if (mode == MODE_RFC2217) {
-    page += F("<div class='rec'>A WiFi-serial client is attached to the target — "
-              "logging is paused until it disconnects.</div></body></html>");
+    page += "<div class='rec'>&#128225; WiFi-serial client attached &mdash; target UART bridged to your PC.<br>";
+    if (recording) page += "&#9679; Also logging to SD: <code>" + htmlEscape(currentFile) + "</code>";
+    else           page += "Press <b>BOOT</b> to start SD logging alongside the WiFi session.";
+    page += "</div></body></html>";
     server.send(200, "text/html", page); return;
   }
   if (recording) {
@@ -643,6 +663,87 @@ static void handleFlashFileDo() {
   flashStreamFooter(ok, "/flashfile?name=" + name);
 }
 
+// ----------------------------------------------- web serial monitor --------
+static void handleMonitor() {
+  server.send(200, "text/html", F(
+    "<!doctype html><html><head>"
+    "<meta charset='UTF-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Serial Monitor</title>"
+    "<style>"
+    "*{box-sizing:border-box;margin:0;padding:0}"
+    "body{background:#0d1117;color:#c9d1d9;font-family:monospace;height:100vh;display:flex;flex-direction:column}"
+    "#hdr{background:#161b22;padding:6px 12px;display:flex;gap:8px;align-items:center;"
+          "border-bottom:1px solid #30363d;flex-shrink:0}"
+    "#hdr strong{color:#58a6ff;font-size:14px}"
+    "button{padding:3px 10px;border:1px solid #30363d;background:#21262d;color:#c9d1d9;"
+           "cursor:pointer;font-size:12px;border-radius:5px}"
+    "button:hover{background:#30363d}"
+    "#dot{width:8px;height:8px;border-radius:50%;background:#3fb950;display:inline-block;flex-shrink:0}"
+    "#dot.off{background:#6e7681}"
+    "#status{font-size:11px;color:#6e7681;margin-left:auto}"
+    "#term{flex:1;overflow-y:auto;padding:10px 14px;font-size:13px;line-height:1.55;"
+          "white-space:pre-wrap;word-break:break-all}"
+    "</style></head><body>"
+    "<div id='hdr'>"
+    "<span id='dot' class='off'></span>"
+    "<strong>&#9654; Serial Monitor</strong>"
+    "<button onclick='clr()'>Clear</button>"
+    "<button onclick=\"location.href='/'\">&#8592; Back</button>"
+    "<span id='status'>Connecting...</span>"
+    "</div>"
+    "<div id='term'></div>"
+    "<script>"
+    "var p=0,D=document.getElementById('term'),"
+        "st=document.getElementById('status'),dt=document.getElementById('dot');"
+    "function clr(){D.textContent=''}"
+    "function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}"
+    "function poll(){"
+      "fetch('/monitor/data?from='+p)"
+      ".then(function(r){"
+        "var w=r.headers.get('X-Write-Pos');if(w)p=parseInt(w);return r.text();"
+      "})"
+      ".then(function(t){"
+        "if(t.length){"
+          "var atBottom=D.scrollHeight-D.clientHeight-D.scrollTop<40;"
+          "D.innerHTML+=esc(t);"
+          "if(atBottom)D.scrollTop=D.scrollHeight;"
+        "}"
+        "dt.className='';st.textContent='Live • '+p+' B';"
+        "setTimeout(poll,150);"
+      "})"
+      ".catch(function(){dt.className='off';st.textContent='Reconnecting...';setTimeout(poll,1000);});"
+    "}"
+    "poll();"
+    "</script></body></html>"
+  ));
+}
+
+static void handleMonitorData() {
+  uint32_t from = 0;
+  if (server.hasArg("from")) from = (uint32_t)strtoul(server.arg("from").c_str(), nullptr, 10);
+  uint32_t w = g_monWrite;
+
+  uint32_t avail = w - from;
+  if (avail > (uint32_t)MON_BUF_SIZE) {
+    from  = w - (uint32_t)MON_BUF_SIZE;
+    avail = (uint32_t)MON_BUF_SIZE;
+  }
+
+  server.sendHeader("X-Write-Pos", String(w));
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("Access-Control-Expose-Headers", "X-Write-Pos");
+
+  if (avail == 0) { server.send(200, "text/plain", ""); return; }
+
+  String data; data.reserve(avail);
+  for (uint32_t i = 0; i < avail; i++) {
+    char c = (char)g_monBuf[(from + i) % MON_BUF_SIZE];
+    data += (c ? c : ' ');   // replace null bytes (rare) with space
+  }
+  server.send(200, "text/plain", data);
+}
+
 void webBegin() {
   server.on("/",          handleRoot);
   server.on("/download",  handleDownload);
@@ -657,5 +758,7 @@ void webBegin() {
   server.on("/graph",          HTTP_GET,  handleGraph);
   server.on("/data/latest",    HTTP_GET,  handleDataLatest);
   server.on("/api/statusbar",  HTTP_GET,  handleApiStatusBar);
+  server.on("/monitor",        HTTP_GET,  handleMonitor);
+  server.on("/monitor/data",   HTTP_GET,  handleMonitorData);
   server.begin();
 }

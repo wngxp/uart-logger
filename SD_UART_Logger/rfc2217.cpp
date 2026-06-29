@@ -24,7 +24,7 @@
 #define OPT_BINARY  0
 #define OPT_SGA     3
 #define OPT_COMPORT 44
-// ---- com-port client sub-commands (server reply = +100) ----
+// ---- com-port client sub-commands (server reply = cmd+100) ----
 #define CP_SET_BAUDRATE 1
 #define CP_SET_CONTROL  5
 // ---- SET-CONTROL values (pyserial / esptool) ----
@@ -61,9 +61,13 @@ static void sendDo  (uint8_t o) { uint8_t b[3] = {T_IAC, T_DO,   o}; client.writ
 static void sendDont(uint8_t o) { uint8_t b[3] = {T_IAC, T_DONT, o}; client.write(b, 3); localDo[o]   = false; }
 
 static void applyControlLines() {
-  // Same truth table as a CP2102/CH340 auto-reset circuit:
-  digitalWrite(TARGET_IO0_PIN, (g_dtr && !g_rts) ? LOW : HIGH);
-  digitalWrite(TARGET_EN_PIN,  (g_rts && !g_dtr) ? LOW : HIGH);
+  // Direct mapping: DTR drives IO0 (boot), RTS drives EN (reset).
+  // Both active-low on the target: assert (true) = pull LOW via open-drain.
+  // esptool sequence:  DTR=1+RTS=1 → EN+IO0 both LOW (hold in reset, boot pin asserted)
+  //                    RTS=0       → EN HIGH (chip starts, samples IO0=LOW → download mode)
+  //                    DTR=0       → IO0 HIGH (release boot pin)
+  digitalWrite(TARGET_IO0_PIN, g_dtr ? LOW : HIGH);
+  digitalWrite(TARGET_EN_PIN,  g_rts ? LOW : HIGH);
 }
 
 static void comResp(uint8_t cmd, const uint8_t *data, uint8_t len) {
@@ -111,8 +115,13 @@ static void handleSubneg() {
       default: break;
     }
     comResp(CP_SET_CONTROL, &v, 1);
+  } else if (sbLen >= 3) {
+    // Catch-all: echo back the first data byte for any other COM-port sub-command
+    // (datasize, parity, stopsize, linestate-mask, modemstate-mask, purge-data, …).
+    // This advances pyserial's option state from REQUESTED -> ACTIVE without us
+    // needing to enumerate every command code.
+    comResp(cmd, &sbBuf[2], 1);
   }
-  // other com-port sub-commands (datasize/parity/stopsize) are accepted silently
 }
 
 static void feed(uint8_t c) {
@@ -160,6 +169,16 @@ static void onConnect() {
 }
 
 static void onDisconnect() {
+  if (recording) {
+    xSemaphoreTake(sdMutex, portMAX_DELAY);
+    logFile.flush(); logFile.close();
+    xSemaphoreGive(sdMutex);
+    recording = false;
+    g_curFile[0] = 0;
+    currentFile = "";
+    refreshStorage();
+    DBG("[RFC2217] log closed on disconnect\n");
+  }
   client.stop();
   mode = MODE_LOGGER;
   Serial1.updateBaudRate(UART_BAUD);
@@ -170,6 +189,23 @@ static void onDisconnect() {
 static void pump() {
   bool moved = false;
 
+  // Handle recording start/stop while RFC2217 client is connected
+  if (startReq && !recording) {
+    startReq = false;
+    xSemaphoreTake(sdMutex, portMAX_DELAY);
+    currentFile = getNewFileName();
+    logFile = SD_MMC.open(currentFile, FILE_WRITE);
+    xSemaphoreGive(sdMutex);
+    if (logFile) {
+      snprintf(g_curFile, sizeof(g_curFile), "%s", currentFile.c_str());
+      recording = true;
+      DBG("[RFC2217] recording -> %s\n", currentFile.c_str());
+    } else {
+      currentFile = "";
+      DBG("[RFC2217] log open failed\n");
+    }
+  }
+
   // PC -> target (run the telnet parser)
   int guard = 2048;
   while (client.available() && guard-- > 0) {
@@ -179,15 +215,33 @@ static void pump() {
     moved = true;
   }
 
-  // target -> PC (escape 0xFF as 0xFF 0xFF)
+  // target -> PC + web monitor + optional SD log
   int n = Serial1.available();
   if (n > 0) {
     uint8_t in[256], out[512];
     if (n > (int)sizeof(in)) n = sizeof(in);
     int r = Serial1.readBytes(in, n);
+    feedMonitor(in, r);
+    if (recording) {
+      xSemaphoreTake(sdMutex, portMAX_DELAY);
+      logFile.write(in, r);
+      xSemaphoreGive(sdMutex);
+    }
     int oi = 0;
     for (int i = 0; i < r; i++) { out[oi++] = in[i]; if (in[i] == 0xFF) out[oi++] = 0xFF; }
     if (oi > 0) { client.write(out, oi); moved = true; }
+  }
+
+  if (stopReq && recording) {
+    stopReq = false;
+    xSemaphoreTake(sdMutex, portMAX_DELAY);
+    logFile.flush(); logFile.close();
+    xSemaphoreGive(sdMutex);
+    recording = false;
+    g_curFile[0] = 0;
+    currentFile = "";
+    refreshStorage();
+    DBG("[RFC2217] recording stopped\n");
   }
 
   if (!moved) vTaskDelay(1);

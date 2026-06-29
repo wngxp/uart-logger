@@ -33,6 +33,21 @@ static void rgbForState(bool wifi) {
 }
 
 #if ENABLE_LCD
+// RGB565 color constants — defined explicitly so they compile on any
+// Arduino_GFX_Library version (some releases dropped these macros).
+#ifndef BLACK
+# define BLACK    0x0000
+# define WHITE    0xFFFF
+# define RED      0xF800
+# define GREEN    0x07E0
+# define BLUE     0x001F
+# define CYAN     0x07FF
+# define MAGENTA  0xF81F
+# define YELLOW   0xFFE0
+# define ORANGE   0xFD20
+# define DARKGREY 0x7BEF
+#endif
+
 Arduino_GFX *gfx = nullptr;
 static Arduino_DataBus *bus = nullptr;
 
