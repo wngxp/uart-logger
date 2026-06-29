@@ -36,7 +36,7 @@ String statusBarHtml() {
 // ----------------------------------------------------- root ---------------
 static void handleRoot() {
   String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("<ip>");
-  String page; page.reserve(4096);
+  String page; page.reserve(6144);
   page += F("<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>SD UART Logger</title><style>"
@@ -51,13 +51,50 @@ static void handleRoot() {
             ".note{margin:.6rem 0;padding:.6rem;background:#0e7490;border-radius:8px;font-size:.9rem}"
             "code{background:#000;padding:.1rem .3rem;border-radius:4px}"
             ".rec{background:#7f1d1d;padding:.6rem;border-radius:8px;margin-bottom:1rem}"
+            ".rfc{margin:.6rem 0;padding:.8rem;background:#1e3a5f;border-radius:8px;font-size:.9rem}"
+            ".step{font-weight:600;margin:.7rem 0 .25rem;color:#93c5fd}"
+            ".cmdrow{display:flex;align-items:center;gap:.5rem;margin:.15rem 0}"
+            ".cmdrow code{flex:1;padding:.35rem .5rem;word-break:break-all}"
+            ".cpbtn{background:#374151!important;font-size:.78rem!important;"
+            "padding:.2rem .45rem!important;margin:0!important;flex-shrink:0}"
+            ".dim{color:#9ca3af}"
             "</style></head><body><h1>SD UART Logger</h1>");
   page += statusBarHtml();
 
-  // WiFi-serial (RFC2217) hint for VS Code / esptool
-  page += "<div class='note'><b>Flash / Monitor the target over WiFi.</b><br>"
-          "Point esptool or VS Code ESP-IDF at: <code>rfc2217://" + ip + ":" + String(RFC2217_PORT) + "</code><br>"
-          "e.g. <code>idf.py -p rfc2217://" + ip + ":" + String(RFC2217_PORT) + " flash monitor</code></div>";
+  // RFC2217 instruction block with copy buttons
+  String rfc     = "rfc2217://" + ip + ":" + String(RFC2217_PORT);
+  String rfcMdns = String("rfc2217://") + MDNS_NAME + ".local:" + String(RFC2217_PORT);
+  page += "<div class='rfc'>"
+          "<b>Wireless Flash &amp; Monitor &mdash; RFC2217 port " + String(RFC2217_PORT) + "</b>"
+          "<p class='dim' style='margin:.3rem 0 .4rem'>"
+          "Point idf.py or esptool at the logger. "
+          "Auto-reset (EN&nbsp;+&nbsp;IO0) and baud negotiation are handled automatically &mdash; "
+          "works exactly like a USB cable.</p>";
+
+  page += "<div class='step'>1 &mdash; Terminal: flash &amp; open serial monitor</div>"
+          "<div class='cmdrow'>"
+          "<code id='c1'>idf.py -p " + rfc + " flash monitor</code>"
+          "<button class='btn cpbtn' onclick='cp(\"c1\")'>Copy</button></div>";
+
+  page += "<div class='step'>2 &mdash; Terminal: flash only (esptool)</div>"
+          "<div class='cmdrow'>"
+          "<code id='c2'>esptool.py --port " + rfc + " write_flash 0x10000 app.bin</code>"
+          "<button class='btn cpbtn' onclick='cp(\"c2\")'>Copy</button></div>";
+
+  page += "<div class='step'>3 &mdash; VS Code ESP-IDF: add to <code>.vscode/settings.json</code></div>"
+          "<div class='cmdrow'>"
+          "<code id='c3'>&quot;idf.port&quot;: &quot;" + rfc + "&quot;</code>"
+          "<button class='btn cpbtn' onclick='cp(\"c3\")'>Copy</button></div>";
+
+  page += "<p class='dim' style='margin:.6rem 0 0'>"
+          "mDNS alternative: <code>" + rfcMdns + "</code>"
+          " &mdash; macOS/Linux native; Windows needs Bonjour.<br>"
+          "SD logging pauses while a client is connected and resumes automatically on disconnect.</p>"
+          "</div>"
+          "<script>function cp(id){"
+          "navigator.clipboard.writeText(document.getElementById(id).innerText)"
+          ".then(function(){var b=event.target;b.textContent='Copied!';setTimeout(function(){b.textContent='Copy'},1500)})"
+          "}</script>";
 
   page += "<div class='bar'><a class='btn' href='/flash'>Upload &amp; flash .bin</a> "
           "<a class='btn del' href='/format' onclick=\"return confirm('Format the SD card? This erases all logs.')\">Format SD</a></div>";
@@ -91,9 +128,12 @@ static void handleRoot() {
         if (slash >= 0) name = name.substring(slash + 1);
         uint64_t sz = f.size();
         total += sz; count++;
+        String nameLower = name; nameLower.toLowerCase();
         rows += "<tr><td>" + htmlEscape(name) + "</td><td>" + humanSize(sz) +
-                "</td><td><a class='btn' href='/download?name=" + name +
-                "'>Download</a> <a class='btn del' href='/delete?name=" + name +
+                "</td><td><a class='btn' href='/download?name=" + name + "'>Download</a>";
+        if (nameLower.endsWith(".bin"))
+          rows += " <a class='btn alt' href='/flashfile?name=" + name + "'>Flash</a>";
+        rows += " <a class='btn del' href='/delete?name=" + name +
                 "' onclick=\"return confirm('Delete " + name + "?')\">Delete</a></td></tr>";
       }
       f = dir.openNextFile();
@@ -371,6 +411,73 @@ static void handleFlashResult() {
   server.send(200, "text/html", p);
 }
 
+// ----------------------------------------------- flash an existing SD .bin --
+static void handleFlashFileGet() {
+  if (recording || mode != MODE_LOGGER) { server.send(409, "text/plain", "Busy"); return; }
+  String name = server.arg("name");
+  if (!safeName(name)) { server.send(400, "text/plain", "Bad name"); return; }
+  String lower = name; lower.toLowerCase();
+  if (!lower.endsWith(".bin")) { server.send(400, "text/plain", "Not a .bin"); return; }
+
+  String p; p.reserve(1536);
+  p += F("<!doctype html><html><head><meta charset='utf-8'>"
+         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+         "<title>Flash from SD</title><style>"
+         "body{font-family:system-ui,Arial;margin:1.2rem;background:#111;color:#eee}"
+         "input,button{font-size:1rem;padding:.4rem;margin:.2rem 0}"
+         "button{background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer}"
+         "a{color:#60a5fa}code{background:#000;padding:.1rem .3rem;border-radius:4px}"
+         "small{color:#9ca3af}"
+         "</style></head><body><h1>Flash from SD card</h1>");
+  p += statusBarHtml();
+  p += "<p>File: <b>" + htmlEscape(name) + "</b><br>"
+       "The target will be reset into bootloader mode automatically (EN + IO0 required).</p>";
+  p += "<form method='POST' action='/flashfile'>"
+       "<input type='hidden' name='name' value='" + htmlEscape(name) + "'>"
+       "<p>Flash offset:<br>"
+       "<input name='offset' value='0x10000'><br>"
+       "<small><code>0x10000</code>&nbsp;= app partition &nbsp;"
+       "<code>0x0</code>&nbsp;= merged/bootloader image</small></p>"
+       "<button type='submit'>&#x26A1; Flash now</button></form>";
+  p += "<p><a href='/'>&#x2190; back</a></p></body></html>";
+  server.send(200, "text/html", p);
+}
+
+static void handleFlashFileDo() {
+  String name = server.arg("name");
+  uint32_t offset = strtoul(server.arg("offset").c_str(), nullptr, 0);
+  if (!safeName(name)) { server.send(400, "text/plain", "Bad name"); return; }
+  String lower = name; lower.toLowerCase();
+  if (!lower.endsWith(".bin")) { server.send(400, "text/plain", "Not a .bin"); return; }
+  if (mode == MODE_RFC2217) { server.send(409, "text/plain", "RFC2217 client active"); return; }
+  stopRecordingAndWait();
+  mode = MODE_FLASHING;
+
+  String log;
+  bool ok = flashTargetFromFile(("/" + name).c_str(), offset, log);
+  mode = MODE_LOGGER;
+  refreshStorage();
+  DBG("[WEB] Flash-from-SD %s: %s\n", name.c_str(), ok ? "OK" : "FAILED");
+
+  String p = F("<!doctype html><html><head><meta charset='utf-8'>"
+               "<title>Flash result</title><style>"
+               "body{font-family:system-ui,Arial;margin:1.2rem;background:#111;color:#eee}"
+               "a.btn{background:#2563eb;color:#fff;border:0;border-radius:6px;"
+               "padding:.4rem .7rem;margin:.15rem;cursor:pointer;"
+               "text-decoration:none;display:inline-block;font-size:.9rem}"
+               "pre{background:#000;padding:.8rem 1rem;border-radius:8px;overflow:auto;"
+               "white-space:pre-wrap;font-size:.82rem;line-height:1.55;color:#86efac;"
+               "max-height:70vh}"
+               "</style></head><body><h1>");
+  p += ok ? "&#x2705; Flash OK" : "&#x274C; Flash failed";
+  p += F("</h1><pre>");
+  p += htmlEscape(log);
+  p += "</pre><p>"
+       "<a class='btn' href='/flashfile?name=" + htmlEscape(name) + "'>&#x26A1; Flash again</a>"
+       " &nbsp; <a class='btn' href='/'>Home</a></p></body></html>";
+  server.send(200, "text/html", p);
+}
+
 void webBegin() {
   server.on("/",          handleRoot);
   server.on("/download",  handleDownload);
@@ -378,7 +485,9 @@ void webBegin() {
   server.on("/deleteall", handleDeleteAll);
   server.on("/format",    handleFormat);
   server.on("/zip",       handleZip);
-  server.on("/flash", HTTP_GET,  handleFlashPage);
-  server.on("/flash", HTTP_POST, handleFlashResult, handleFlashUpload);
+  server.on("/flash",     HTTP_GET,  handleFlashPage);
+  server.on("/flash",     HTTP_POST, handleFlashResult, handleFlashUpload);
+  server.on("/flashfile", HTTP_GET,  handleFlashFileGet);
+  server.on("/flashfile", HTTP_POST, handleFlashFileDo);
   server.begin();
 }
