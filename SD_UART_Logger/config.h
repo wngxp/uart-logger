@@ -56,8 +56,8 @@
 //  *** YOU wire these four lines (plus GND) to the target esp32. ***
 //  Defaults use the broken-out UART pads (43/44) and two spare GPIOs.
 //  Verify they are accessible on your board and change if needed.
-#define UART_TX_PIN    11                  // bridge TX  -> target RX (U0RXD)
-#define UART_RX_PIN    10                  // bridge RX  <- target TX (U0TXD)
+#define UART_TX_PIN    10                  // bridge TX  -> target RX (U0RXD)
+#define UART_RX_PIN    11                  // bridge RX  <- target TX (U0TXD)
 #define UART_BAUD      115200UL            // default logging/monitor baud
 #define UART_RX_BUF    16384               // big driver RX buffer for bursts
 #define TARGET_EN_PIN  8                   // -> target EN / CHIP_PU (reset)
@@ -77,6 +77,7 @@
 #define ENABLE_WEB_FLASH  1                // 1 = on-device .bin flasher (needs
                                            //     vendored esp-serial-flasher)
 #define WEB_FLASH_HIGHER_BAUD 460800UL     // speed-up after sync (0 = stay 115200)
+#define DEBUG_FLASH           0            // 1 = verbose SLIP trace + hex dumps in flasher
 
 // ----------------------------------------------- Operating mode ------------
 //  All three contend for UART1, so only one is active at a time.

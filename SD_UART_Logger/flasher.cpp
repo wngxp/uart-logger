@@ -42,6 +42,18 @@ static void flog(const char *fmt, ...) {
   if (g_flashLog) { *g_flashLog += buf; *g_flashLog += '\n'; }
 }
 
+#if DEBUG_FLASH
+// Hex dump up to 64 bytes of a buffer, 16 per line.
+static void flogHex(const char *label, const uint8_t *d, int n) {
+  char line[64]; int li = 0;
+  for (int i = 0; i < n && i < 64; i++) {
+    li += snprintf(line + li, sizeof(line) - li, "%02X ", d[i]);
+    if ((i & 15) == 15 || i == n - 1) { flog("  %s +%02d: %s", label, i & ~15, line); li = 0; }
+  }
+  if (n > 64) flog("  %s ... (%d B total, showing first 64)", label, n);
+}
+#endif
+
 // ------------------------------------------------- low-level SLIP ---------
 static void slipByte(uint8_t b) {
   if      (b == SLIP_END) { Serial1.write(SLIP_ESC); Serial1.write((uint8_t)SLIP_ESC_END); }
@@ -86,16 +98,36 @@ static bool doCommand(uint8_t cmd, const uint8_t *data, uint16_t len,
   sendCommand(cmd, data, len, checksum);
   uint8_t resp[64];
   uint32_t start = millis();
+  bool gotAny = false;
   while (millis() - start < timeoutMs) {
     int n = readPacket(resp, sizeof(resp), timeoutMs);
-    if (n < 0) return false;
+    if (n < 0) {
+#if DEBUG_FLASH
+      flog("  cmd 0x%02X: no SLIP frame in %u ms (gotAny=%d)", cmd, timeoutMs, gotAny);
+#endif
+      return false;
+    }
+    gotAny = true;
+#if DEBUG_FLASH
+    flogHex("rx", resp, n);
+#endif
     if (n >= 8 && resp[0] == 0x01 && resp[1] == cmd) {
       uint16_t size = resp[2] | (resp[3] << 8);
       if (outValue) *outValue = resp[4] | (resp[5] << 8) | (resp[6] << 16) | ((uint32_t)resp[7] << 24);
-      if (size >= 2 && 8 + size <= n) return resp[8 + size - 2] == 0;  // [status, err]
+      if (size >= 2 && 8 + size <= n) {
+        bool ok = resp[8 + size - 2] == 0;
+        if (!ok) flog("  cmd 0x%02X: ROM error byte 0x%02X", cmd, resp[8 + size - 1]);
+        return ok;
+      }
       return true;
     }
+#if DEBUG_FLASH
+    if (n >= 2) flog("  cmd 0x%02X: stale pkt dir=0x%02X op=0x%02X len=%d", cmd, resp[0], resp[1], n);
+#endif
   }
+#if DEBUG_FLASH
+  flog("  cmd 0x%02X: outer loop timed out", cmd);
+#endif
   return false;
 }
 
@@ -112,6 +144,17 @@ static bool romSync() {
     }
   }
   flog("  sync FAILED after 16 attempts");
+  // Drain whatever the target is actually sending — distinguishes "dead silent"
+  // (wiring/power problem) from "target is responding but not a ROM bootloader".
+  uint32_t t0 = millis(); int nr = 0;
+  char raw[97]; int ri = 0;
+  while (millis() - t0 < 300 && nr < 32) {
+    if (!Serial1.available()) { vTaskDelay(1); continue; }
+    uint8_t b = Serial1.read(); nr++;
+    ri += snprintf(raw + ri, sizeof(raw) - ri, "%02X ", b);
+  }
+  if (nr) flog("  raw bytes from target after failure: %s(%d B) — target may be running app, not ROM bootloader", raw, nr);
+  else    flog("  no bytes from target — check EN/IO0 wiring and target power");
   return false;
 }
 
