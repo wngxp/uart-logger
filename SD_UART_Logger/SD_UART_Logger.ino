@@ -40,6 +40,11 @@ SemaphoreHandle_t sdMutex = nullptr;
 uint64_t         g_totalBytes = 0, g_freeBytes = 0;
 float            g_battV = 0;
 
+#if LOG_PARSE_ENABLE
+DataSample       g_dataBuf[LOG_GRAPH_BUF];
+volatile int     g_dataTail = 0, g_dataCount = 0;
+#endif
+
 // =============================== SETUP ===================================
 void setup() {
  

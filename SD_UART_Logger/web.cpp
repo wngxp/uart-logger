@@ -21,7 +21,7 @@ static String htmlEscape(const String &s) {
 }
 
 String statusBarHtml() {
-  String s = "<div class='bar2'>";
+  String s = "<div class='bar2' id='sbar'>";
   s += "<b>Mode:</b> ";
   s += (mode == MODE_RFC2217) ? "WiFi-serial" : (mode == MODE_FLASHING) ? "FLASHING" : "LOGGER";
   s += " &nbsp; <b>Wi-Fi:</b> ";
@@ -96,8 +96,20 @@ static void handleRoot() {
           ".then(function(){var b=event.target;b.textContent='Copied!';setTimeout(function(){b.textContent='Copy'},1500)})"
           "}</script>";
 
-  page += "<div class='bar'><a class='btn' href='/flash'>Upload &amp; flash .bin</a> "
-          "<a class='btn del' href='/format' onclick=\"return confirm('Format the SD card? This erases all logs.')\">Format SD</a></div>";
+  page += "<div class='bar'>"
+          "<a class='btn' href='/flash'>Upload &amp; flash .bin</a> "
+          "<a class='btn alt' href='/graph'>Live Graph</a> "
+          "<a class='btn del' href='/format' onclick=\"return confirm('Format the SD card? This erases all logs.')\">Format SD</a>"
+          "</div>"
+          // status bar auto-refresh every 2 s
+          "<script>"
+          "function refreshStat(){"
+            "fetch('/api/statusbar').then(function(r){return r.text();}).then(function(h){"
+              "var w=document.getElementById('sbar');if(w)w.innerHTML=h;"
+            "}).catch(function(){});"
+            "setTimeout(refreshStat,2000);}"
+          "setTimeout(refreshStat,2000);"
+          "</script>";
 
   if (mode == MODE_RFC2217) {
     page += F("<div class='rec'>A WiFi-serial client is attached to the target — "
@@ -298,6 +310,60 @@ static void handleZip() {
   server.sendContent("");
 }
 
+// ----------------------------------------------- flash streaming helpers ---
+static void flashStreamHeader() {
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html", "");
+  server.sendContent(F("<!doctype html><html><head>"
+    "<meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Flashing...</title><style>"
+    "body{font-family:system-ui,Arial;margin:1rem;background:#111;color:#eee}"
+    "h1{font-size:1.15rem;margin:.3rem 0}"
+    ".pbg{background:#374151;border-radius:5px;height:18px;overflow:hidden;margin:.4rem 0}"
+    ".pfill{height:100%;width:0;background:linear-gradient(90deg,#1d4ed8,#3b82f6);transition:width .3s}"
+    ".pct{font-size:.82rem;color:#9ca3af;margin-bottom:.3rem}"
+    ".log{background:#000;padding:.5rem .8rem;border-radius:8px;font-size:.76rem;"
+    "line-height:1.5;color:#86efac;height:58vh;overflow-y:auto;white-space:pre-wrap;font-family:monospace}"
+    "a.btn{background:#2563eb;color:#fff;border-radius:6px;padding:.35rem .7rem;"
+    "text-decoration:none;display:inline-block;margin:.15rem;font-size:.9rem}"
+    "#done{margin-top:.7rem;display:none}"
+    "</style></head><body>"
+    "<h1 id='hd'>&#x26A1; Flashing target...</h1>"
+    "<div class='pbg'><div id='bar' class='pfill'></div></div>"
+    "<div class='pct' id='pct'>Preparing...</div>"
+    "<pre class='log' id='log'></pre>"
+    "<div id='done'></div>"
+    "<script>"
+    "var $=function(id){return document.getElementById(id)};"
+    "function U(p,m){"
+      "if(p>=0){$('bar').style.width=p+'%';$('pct').textContent=p+'%';}"
+      "if(m){var l=$('log');l.textContent+=m+'\\n';l.scrollTop=l.scrollHeight;}}"
+    "function done(ok,h){"
+      "$('hd').textContent=ok?'\\u2705 Flash complete':'\\u274C Flash failed';"
+      "$('pct').style.display='none';"
+      "$('bar').style.background=ok?'#16a34a':'#dc2626';"
+      "$('bar').style.width='100%';"
+      "$('done').style.display='block';"
+      "$('done').innerHTML='<a class=\"btn\" href=\"'+h+'\">Flash again</a>"
+        " <a class=\"btn\" href=\"/\">Home</a>';}"
+    "</script>"
+  ));
+  // ~1 KB padding so Chrome starts rendering before the first script tag
+  server.sendContent(F("<!-- flush "));
+  for (int i = 0; i < 28; i++) server.sendContent(F("                                        "));
+  server.sendContent(F(" -->"));
+}
+
+static void flashStreamFooter(bool ok, const String &backHref) {
+  char buf[160];
+  // need to JS-escape the href (it's a URL so only & is possible — safe enough)
+  snprintf(buf, sizeof(buf), "<script>done(%s,'%s')</script></body></html>",
+           ok ? "true" : "false", backHref.c_str());
+  server.sendContent(buf);
+  server.sendContent("");  // end chunked transfer
+}
+
 // ----------------------------------------------- flash a .bin -------------
 static void handleFlashPage() {
   String p; p.reserve(2048);
@@ -383,8 +449,11 @@ static void handleFlashResult() {
   uint32_t offset = strtoul(server.arg("offset").c_str(), nullptr, 0);
   DBG("[WEB] Flash handler called: offset=0x%X\n", offset);
 
+  flashStreamHeader();
+  flashEnableStream();
   String log;
   bool ok = flashTargetFromFile(FLASH_TMP_PATH, offset, log);
+  flashDisableStream();
 
   xSemaphoreTake(sdMutex, portMAX_DELAY);
   SD_MMC.remove(FLASH_TMP_PATH);
@@ -392,23 +461,133 @@ static void handleFlashResult() {
   mode = MODE_LOGGER;
   refreshStorage();
   DBG("[WEB] Flash result: %s\n", ok ? "OK" : "FAILED");
+  flashStreamFooter(ok, "/flash");
+}
 
-  String p = F("<!doctype html><html><head><meta charset='utf-8'>"
-               "<title>Flash result</title><style>"
-               "body{font-family:system-ui,Arial;margin:1.2rem;background:#111;color:#eee}"
-               "a{color:#60a5fa}"
-               "pre{background:#000;padding:.8rem 1rem;border-radius:8px;overflow:auto;"
-               "white-space:pre-wrap;font-size:.82rem;line-height:1.55;color:#86efac;"
-               "max-height:70vh}"
-               "</style></head><body><h1>");
-  p += ok ? "&#x2705; Flash OK" : "&#x274C; Flash failed";
-  p += F("</h1><pre>");
-  p += htmlEscape(log);
-  p += F("</pre><p>"
-         "<a class='btn' href='/flash'>&larr; Flash another</a> &nbsp; "
-         "<a class='btn' href='/'>Home</a></p>"
-         "</body></html>");
+// ----------------------------------------------- live graph data -----------
+static void handleDataLatest() {
+#if LOG_PARSE_ENABLE
+  uint32_t since = strtoul(server.arg("since").c_str(), nullptr, 0);
+  server.sendHeader("Cache-Control", "no-cache");
+
+  int count = g_dataCount, tail = g_dataTail;
+  int start = (tail - count + LOG_GRAPH_BUF) % LOG_GRAPH_BUF;
+
+  // collect indices newer than `since`
+  String ms = "", sa = "", sv = "", st = "";
+  int n = 0;
+  for (int i = 0; i < count; i++) {
+    int idx = (start + i) % LOG_GRAPH_BUF;
+    if (g_dataBuf[idx].ms <= since) continue;
+    if (n) { ms += ','; sa += ','; sv += ','; st += ','; }
+    ms += String(g_dataBuf[idx].ms);
+    sa += String(g_dataBuf[idx].a, 3);
+    sv += String(g_dataBuf[idx].v, 3);
+    st += String(g_dataBuf[idx].t, 3);
+    n++;
+  }
+
+  String json = "{\"ok\":1,\"recording\":";
+  json += recording ? "true" : "false";
+  json += ",\"n\":" + String(n);
+  if (n) {
+    json += ",\"ms\":[" + ms + "],\"a\":[" + sa + "],\"v\":[" + sv + "],\"t\":[" + st + "]";
+  }
+  json += "}";
+  server.send(200, "application/json", json);
+#else
+  server.send(200, "application/json", F("{\"ok\":0,\"n\":0}"));
+#endif
+}
+
+static void handleGraph() {
+  String p; p.reserve(5120);
+  p += F("<!doctype html><html><head>"
+    "<meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Live Graph</title><style>"
+    "html,body{margin:0;height:100%;background:#111;color:#eee;font-family:system-ui,Arial}"
+    "body{display:flex;flex-direction:column}"
+    "header{padding:.4rem .8rem;background:#1f2937;display:flex;align-items:center;gap:.8rem;flex-shrink:0}"
+    "h1{font-size:.95rem;margin:0}#rst{font-size:.8rem;color:#9ca3af;margin-left:auto}"
+    "a{color:#60a5fa;font-size:.82rem;text-decoration:none}"
+    "canvas{flex:1;display:block;width:100%;min-height:0}"
+    ".hint{font-size:.75rem;color:#6b7280;padding:.2rem .8rem;flex-shrink:0}"
+    "</style></head><body>"
+    "<header><h1>Live Graph</h1>"
+    "<span id='rst'>Connecting...</span>"
+    "<a href='/'>&#x2190; Home</a></header>"
+    "<canvas id='c'></canvas>"
+    "<div class='hint'>Format: " LOG_PARSE_FMT " &nbsp;|&nbsp; window: 30 s &nbsp;|&nbsp;"
+    " edit <code>LOG_PARSE_FMT</code> in config.h to match your controller output</div>"
+    "<script>"
+    "var PANELS=[{k:'a',l:'Angle',c:'#60a5fa'},{k:'v',l:'Ang.Vel',c:'#34d399'},{k:'t',l:'Torque',c:'#f87171'}];"
+    "var WIN=30000,samples=[],lastMs=0;"
+    "function draw(){"
+      "var cv=document.getElementById('c');"
+      "var W=cv.clientWidth,H=cv.clientHeight;"
+      "if(!W||!H)return;"
+      "cv.width=W;cv.height=H;"
+      "var ctx=cv.getContext('2d');"
+      "ctx.clearRect(0,0,W,H);"
+      "if(samples.length<2){"
+        "ctx.fillStyle='#6b7280';ctx.font='13px system-ui';ctx.textAlign='center';"
+        "ctx.fillText('Waiting for data — start logging on the target',W/2,H/2);"
+        "return;}"
+      "var PL=52,PR=8,PT=4,PB=22;"
+      "var panH=Math.floor((H-PB-PANELS.length*(PT+2))/PANELS.length);"
+      "var tMax=lastMs,tMin=tMax-WIN,pw=W-PL-PR;"
+      "var vis=samples.filter(function(s){return s.ms>=tMin;});"
+      "if(vis.length<2)return;"
+      "PANELS.forEach(function(p,pi){"
+        "var y0=PT+pi*(panH+PT+2);"
+        "var vals=vis.map(function(s){return s[p.k];});"
+        "var yMn=Math.min.apply(null,vals),yMx=Math.max.apply(null,vals);"
+        "if(yMn===yMx){yMn-=1;yMx+=1;}"
+        "var yr=yMx-yMn;yMn-=yr*.08;yMx+=yr*.08;"
+        "ctx.fillStyle='#181818';ctx.fillRect(PL,y0,pw,panH);"
+        "ctx.strokeStyle='#2a2a2a';ctx.lineWidth=1;"
+        "for(var g=0;g<=4;g++){"
+          "var gy=y0+panH*g/4;"
+          "ctx.beginPath();ctx.moveTo(PL,gy);ctx.lineTo(PL+pw,gy);ctx.stroke();"
+          "ctx.fillStyle='#6b7280';ctx.font='9px monospace';ctx.textAlign='right';"
+          "ctx.fillText((yMx-(yMx-yMn)*g/4).toFixed(2),PL-3,gy+3);}"
+        "ctx.fillStyle=p.c;ctx.font='bold 10px system-ui';ctx.textAlign='left';"
+        "ctx.fillText(p.l,PL+4,y0+12);"
+        "ctx.beginPath();ctx.strokeStyle=p.c;ctx.lineWidth=1.5;"
+        "var first=true;"
+        "vis.forEach(function(s){"
+          "var x=PL+pw*(s.ms-tMin)/WIN;"
+          "var y=y0+panH*(1-(s[p.k]-yMn)/(yMx-yMn));"
+          "first?(ctx.moveTo(x,y),first=false):ctx.lineTo(x,y);});"
+        "ctx.stroke();"
+        "ctx.strokeStyle='#374151';ctx.lineWidth=1;ctx.strokeRect(PL,y0,pw,panH);});"
+      "ctx.fillStyle='#6b7280';ctx.font='9px monospace';ctx.textAlign='center';"
+      "for(var ti=0;ti<=6;ti++){"
+        "var tx=PL+(W-PL-PR)*ti/6;"
+        "ctx.fillText(Math.round(-WIN/1000+WIN/1000*ti/6)+'s',tx,H-PB/2+3);}}"
+    "function poll(){"
+      "fetch('/data/latest?since='+lastMs).then(function(r){return r.json();}).then(function(d){"
+        "if(d.n>0){"
+          "for(var i=0;i<d.n;i++)"
+            "samples.push({ms:d.ms[i],a:d.a[i],v:d.v[i],t:d.t[i]});"
+          "lastMs=d.ms[d.n-1];"
+          "var cut=lastMs-WIN-2000;"
+          "while(samples.length&&samples[0].ms<cut)samples.shift();}"
+        "document.getElementById('rst').textContent="
+          "d.recording?'\\u25CF Recording':'\\u25CB Idle';"
+        "draw();"
+      "}).catch(function(){});"
+      "setTimeout(poll,250);}"
+    "window.addEventListener('resize',draw);"
+    "poll();"
+    "</script></body></html>");
   server.send(200, "text/html", p);
+}
+
+// ----------------------------------------------- live graph status bar -----
+static void handleApiStatusBar() {
+  server.send(200, "text/html", statusBarHtml());
 }
 
 // ----------------------------------------------- flash an existing SD .bin --
@@ -453,29 +632,15 @@ static void handleFlashFileDo() {
   stopRecordingAndWait();
   mode = MODE_FLASHING;
 
+  flashStreamHeader();
+  flashEnableStream();
   String log;
   bool ok = flashTargetFromFile(("/" + name).c_str(), offset, log);
+  flashDisableStream();
   mode = MODE_LOGGER;
   refreshStorage();
   DBG("[WEB] Flash-from-SD %s: %s\n", name.c_str(), ok ? "OK" : "FAILED");
-
-  String p = F("<!doctype html><html><head><meta charset='utf-8'>"
-               "<title>Flash result</title><style>"
-               "body{font-family:system-ui,Arial;margin:1.2rem;background:#111;color:#eee}"
-               "a.btn{background:#2563eb;color:#fff;border:0;border-radius:6px;"
-               "padding:.4rem .7rem;margin:.15rem;cursor:pointer;"
-               "text-decoration:none;display:inline-block;font-size:.9rem}"
-               "pre{background:#000;padding:.8rem 1rem;border-radius:8px;overflow:auto;"
-               "white-space:pre-wrap;font-size:.82rem;line-height:1.55;color:#86efac;"
-               "max-height:70vh}"
-               "</style></head><body><h1>");
-  p += ok ? "&#x2705; Flash OK" : "&#x274C; Flash failed";
-  p += F("</h1><pre>");
-  p += htmlEscape(log);
-  p += "</pre><p>"
-       "<a class='btn' href='/flashfile?name=" + htmlEscape(name) + "'>&#x26A1; Flash again</a>"
-       " &nbsp; <a class='btn' href='/'>Home</a></p></body></html>";
-  server.send(200, "text/html", p);
+  flashStreamFooter(ok, "/flashfile?name=" + name);
 }
 
 void webBegin() {
@@ -485,9 +650,12 @@ void webBegin() {
   server.on("/deleteall", handleDeleteAll);
   server.on("/format",    handleFormat);
   server.on("/zip",       handleZip);
-  server.on("/flash",     HTTP_GET,  handleFlashPage);
-  server.on("/flash",     HTTP_POST, handleFlashResult, handleFlashUpload);
-  server.on("/flashfile", HTTP_GET,  handleFlashFileGet);
-  server.on("/flashfile", HTTP_POST, handleFlashFileDo);
+  server.on("/flash",          HTTP_GET,  handleFlashPage);
+  server.on("/flash",          HTTP_POST, handleFlashResult, handleFlashUpload);
+  server.on("/flashfile",      HTTP_GET,  handleFlashFileGet);
+  server.on("/flashfile",      HTTP_POST, handleFlashFileDo);
+  server.on("/graph",          HTTP_GET,  handleGraph);
+  server.on("/data/latest",    HTTP_GET,  handleDataLatest);
+  server.on("/api/statusbar",  HTTP_GET,  handleApiStatusBar);
   server.begin();
 }

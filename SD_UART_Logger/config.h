@@ -79,6 +79,11 @@
 #define WEB_FLASH_HIGHER_BAUD 460800UL     // speed-up after sync (0 = stay 115200)
 #define DEBUG_FLASH           0            // 1 = verbose SLIP trace + hex dumps in flasher
 
+// ----------------------------------------------- Real-time graph -----------
+#define LOG_PARSE_ENABLE  1              // 1 = parse UART lines for live /graph page
+#define LOG_PARSE_FMT     "%f,%f,%f"     // sscanf pattern: angle, ang-velocity, torque
+#define LOG_GRAPH_BUF     300            // ring-buffer depth (300 @ 10 Hz = 30 s)
+
 // ----------------------------------------------- Operating mode ------------
 //  All three contend for UART1, so only one is active at a time.
 enum Mode { MODE_LOGGER, MODE_RFC2217, MODE_FLASHING };

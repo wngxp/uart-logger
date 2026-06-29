@@ -37,6 +37,12 @@ extern SemaphoreHandle_t sdMutex;           // guards all SD access
 extern uint64_t         g_totalBytes, g_freeBytes;
 extern float            g_battV;
 
+#if LOG_PARSE_ENABLE
+struct DataSample { uint32_t ms; float a, v, t; };
+extern DataSample        g_dataBuf[LOG_GRAPH_BUF];
+extern volatile int      g_dataTail, g_dataCount;
+#endif
+
 // Suppress debug prints while an RFC2217 client is attached is NOT needed
 // (RFC2217 runs over WiFi, not the USB console) — so debug is always allowed.
 #define DBG(...) do { Serial.printf(__VA_ARGS__); } while (0)
@@ -70,6 +76,8 @@ bool   rfc2217Service();                   // returns true while a client owns U
 
 // ------------------------------------------------- flasher.cpp ------------
 bool   flashTargetFromFile(const char *path, uint32_t offset, String &msg);
+void   flashEnableStream();              // stream flog() output via server.sendContent()
+void   flashDisableStream();
 
 // ------------------------------------------------- web.cpp ----------------
 void   webBegin();

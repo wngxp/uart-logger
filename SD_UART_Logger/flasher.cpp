@@ -31,8 +31,10 @@
 #define ESP32_MAGIC     0x00f01d83UL
 #define ROM_BLOCK       1024            // FLASH_DATA block size for the ROM loader
 
-static uint32_t g_chipMagic = 0;
-static String  *g_flashLog  = nullptr;  // points at the caller's log string during a flash op
+static uint32_t g_chipMagic  = 0;
+static String  *g_flashLog   = nullptr;
+static bool     g_flashStream = false;
+static int      g_flashPct    = -1;     // set before a flog() call to update progress bar
 
 // Write a line to Serial AND to the web result log simultaneously.
 static void flog(const char *fmt, ...) {
@@ -40,7 +42,24 @@ static void flog(const char *fmt, ...) {
   va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
   Serial.printf("[FLASH] %s\n", buf);
   if (g_flashLog) { *g_flashLog += buf; *g_flashLog += '\n'; }
+  if (g_flashStream) {
+    int pct = g_flashPct; g_flashPct = -1;
+    // escape single quotes and backslashes so the string is safe inside JS ''
+    char esc[240]; int ei = 0;
+    for (const char *s = buf; *s && ei < (int)sizeof(esc) - 3; s++) {
+      if      (*s == '\'') { esc[ei++] = '\\'; esc[ei++] = '\''; }
+      else if (*s == '\\') { esc[ei++] = '\\'; esc[ei++] = '\\'; }
+      else                   esc[ei++] = *s;
+    }
+    esc[ei] = '\0';
+    char chunk[300];
+    snprintf(chunk, sizeof(chunk), "<script>U(%d,'%s')</script>", pct, esc);
+    server.sendContent(chunk);
+  }
 }
+
+void flashEnableStream()  { g_flashStream = true;  g_flashPct = -1; }
+void flashDisableStream() { g_flashStream = false; }
 
 #if DEBUG_FLASH
 // Hex dump up to 64 bytes of a buffer, 16 per line.
@@ -256,6 +275,7 @@ bool flashTargetFromFile(const char *path, uint32_t offset, String &msg) {
       if (pct >= nextLogPct || remaining == 0) {
         uint32_t elapsed = millis() - t0;
         uint32_t kbps = elapsed ? (uint32_t)(((uint64_t)(size - remaining)) * 1000 / elapsed / 1024) : 0;
+        g_flashPct = (int)pct;
         flog("  %3u%%  block %u/%u  %u KB/s", pct, seq, blocks, kbps);
         nextLogPct = ((pct / 10) + 1) * 10;
       }

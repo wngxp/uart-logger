@@ -45,6 +45,33 @@ void closeLogNow() {
   refreshStorage();
 }
 
+// --------------------------------------------------- graph parser ----------
+#if LOG_PARSE_ENABLE
+static char g_parseBuf[128];
+static int  g_parsePos = 0;
+
+static void parseForGraph(const uint8_t *data, int len) {
+  for (int i = 0; i < len; i++) {
+    char c = (char)data[i];
+    if (c == '\n' || c == '\r') {
+      if (g_parsePos > 0) {
+        g_parseBuf[g_parsePos] = '\0';
+        float a, v, t;
+        if (sscanf(g_parseBuf, LOG_PARSE_FMT, &a, &v, &t) == 3) {
+          int idx       = g_dataTail;
+          g_dataBuf[idx] = { (uint32_t)millis(), a, v, t };
+          g_dataTail    = (idx + 1) % LOG_GRAPH_BUF;
+          if (g_dataCount < LOG_GRAPH_BUF) g_dataCount++;
+        }
+        g_parsePos = 0;
+      }
+    } else if (g_parsePos < (int)sizeof(g_parseBuf) - 1) {
+      g_parseBuf[g_parsePos++] = c;
+    }
+  }
+}
+#endif
+
 // --------------------------------------------------- logging step ---------
 static void loggerStep() {
   if (startReq) {
@@ -60,6 +87,9 @@ static void loggerStep() {
     } else {
       while (Serial1.available()) Serial1.read();   // drop stale bytes
       logIdx = 0;
+#if LOG_PARSE_ENABLE
+      g_parsePos = 0; g_dataCount = 0; g_dataTail = 0; // reset graph on new recording
+#endif
       snprintf(g_curFile, sizeof(g_curFile), "%s", currentFile.c_str());
       recording = true;
       DBG("[REC] -> %s\n", currentFile.c_str());
@@ -73,7 +103,12 @@ static void loggerStep() {
     size_t space = LOG_BUF_SIZE - logIdx;
     size_t want  = ((size_t)avail < space) ? (size_t)avail : space;
     int got = Serial1.readBytes(logBuf + logIdx, want);
-    if (got > 0) logIdx += got;
+    if (got > 0) {
+#if LOG_PARSE_ENABLE
+      parseForGraph(logBuf + logIdx, got);
+#endif
+      logIdx += got;
+    }
 
     if (logIdx >= LOG_FLUSH_AT) {
       xSemaphoreTake(sdMutex, portMAX_DELAY);
